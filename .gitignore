@@ -1,1 +1,1 @@
-Nothing should be ignored since only a source file (calculator.html) was added without any build artifacts, dependencies, or temporary files.
+Nothing needs to be added to .gitignore since only a single HTML file (`game.html`) was added, which is a source file and not a build artifact, dependency, or temporary file.

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Simple Vampire Survivor</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; color: white; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 10px; left: 10px; pointer-events: none; }
+        #levelup {
+            display: none; position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); background: rgba(0,0,0,0.9);
+            padding: 20px; border-radius: 10px; text-align: center; border: 2px solid gold;
+        }
+        button {
+            display: block; width: 200px; margin: 10px auto; padding: 10px;
+            background: #444; color: white; border: 1px solid #888; cursor: pointer; font-size: 16px;
+        }
+        button:hover { background: #666; }
+        #gameover {
+            display: none; position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); background: rgba(50,0,0,0.9);
+            padding: 40px; border-radius: 10px; text-align: center; border: 2px solid red;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div>HP: <span id="hp">100</span></div>
+    <div>LV: <span id="lv">1</span> (<span id="exp">0</span>/<span id="nextExp">10</span>)</div>
+    <div>Kills: <span id="kills">0</span></div>
+    <div>Time: <span id="time">0</span>s</div>
+</div>
+
+<div id="levelup">
+    <h2>LEVEL UP!</h2>
+    <p>強化を選んでください</p>
+    <button onclick="chooseUpgrade('damage')">攻撃力 UP</button>
+    <button onclick="chooseUpgrade('speed')">移動速度 UP</button>
+    <button onclick="chooseUpgrade('firerate')">連射速度 UP</button>
+    <button onclick="chooseUpgrade('multishot')">弾数増加</button>
+</div>
+
+<div id="gameover">
+    <h1 style="color:red">GAME OVER</h1>
+    <p>生存時間: <span id="finalTime">0</span>秒</p>
+    <p>倒した数: <span id="finalKills">0</span></p>
+    <button onclick="location.reload()">リトライ</button>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// キャンバスサイズ設定
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ゲーム状態
+let gameState = 'playing'; // playing, paused, gameover
+let frameCount = 0;
+let score = 0;
+let startTime = Date.now();
+
+// プレイヤー
+const player = {
+    x: canvas.width / 2,
+    y: canvas.height / 2,
+    radius: 15,
+    speed: 3,
+    hp: 100,
+    maxHp: 100,
+    level: 1,
+    exp: 0,
+    nextLevelExp: 10,
+    damage: 10,
+    fireRate: 30, // フレーム間隔 (小さいほど速い)
+    fireTimer: 0,
+    bulletSpeed: 7,
+    multiShot: 1, // 同時発射数
+    color: '#00ff00'
+};
+
+// 入力管理
+const keys = {};
+window.addEventListener('keydown', e => keys[e.key] = true);
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// 配列管理
+const bullets = [];
+const enemies = [];
+const expGems = [];
+const damageNumbers = [];
+
+// 敵の生成タイマー
+let enemySpawnRate = 60; // 初期は60フレームごと
+let enemySpawnTimer = 0;
+
+// --- 基本関数 ---
+
+function spawnEnemy() {
+    // 画面外からランダムな位置に出現
+    let x, y;
+    if (Math.random() < 0.5) {
+        x = Math.random() < 0.5 ? -30 : canvas.width + 30;
+        y = Math.random() * canvas.height;
+    } else {
+        x = Math.random() * canvas.width;
+        y = Math.random() < 0.5 ? -30 : canvas.height + 30;
+    }
+
+    // 難易度上昇
+    const difficultyMultiplier = 1 + (score / 100);
+    
+    enemies.push({
+        x: x,
+        y: y,
+        radius: 12,
+        speed: 1.5 + Math.random(),
+        hp: 20 * difficultyMultiplier,
+        damage: 10,
+        color: '#ff0000'
+    });
+}
+
+function createExpGem(x, y, value) {
+    expGems.push({ x, y, radius: 6, value, color: '#00ffff' });
+}
+
+function createDamageNumber(x, y, text) {
+    damageNumbers.push({ x, y, text, life: 30 });
+}
+
+// --- 更新処理 ---
+
+function update() {
+    if (gameState !== 'playing') return;
+
+    frameCount++;
+    const now = Date.now();
+    const elapsed = Math.floor((now - startTime) / 1000);
+    document.getElementById('time').innerText = elapsed;
+
+    // 難易度調整：時間が経つほど敵が早く湧く
+    enemySpawnRate = Math.max(10, 60 - Math.floor(elapsed / 10));
+    enemySpawnTimer++;
+    if (enemySpawnTimer >= enemySpawnRate) {
+        spawnEnemy();
+        enemySpawnTimer = 0;
+    }
+
+    // プレイヤー移動
+    if (keys['w'] || keys['ArrowUp']) player.y -= player.speed;
+    if (keys['s'] || keys['ArrowDown']) player.y += player.speed;
+    if (keys['a'] || keys['ArrowLeft']) player.x -= player.speed;
+    if (keys['d'] || keys['ArrowRight']) player.x += player.speed;
+
+    // 画面内に留める
+    player.x = Math.max(player.radius, Math.min(canvas.width - player.radius, player.x));
+    player.y = Math.max(player.radius, Math.min(canvas.height - player.radius, player.y));
+
+    // 自動攻撃
+    if (player.fireTimer > 0) player.fireTimer--;
+    if (player.fireTimer <= 0) {
+        const target = getNearestEnemy();
+        if (target) {
+            shoot(target);
+            player.fireTimer = player.fireRate;
+        }
+    }
+
+    // 弾の更新
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+        b.life--;
+        if (b.life <= 0) bullets.splice(i, 1);
+    }
+
+    // 敵の更新
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        // プレイヤーに向かう
+        const angle = Math.atan2(player.y - e.y, player.x - e.x);
+        e.x += Math.cos(angle) * e.speed;
+        e.y += Math.sin(angle) * e.speed;
+
+        // 衝突判定 (プレイヤー)
+        const distToPlayer = Math.hypot(player.x - e.x, player.y - e.y);
+        if (distToPlayer < player.radius + e.radius) {
+            player.hp -= 0.5; // 連続ダメージ
+            if (player.hp <= 0) gameOver();
+        }
+
+        // 衝突判定 (弾)
+        for (let j = bullets.length - 1; j >= 0; j--) {
+            const b = bullets[j];
+            const distToBullet = Math.hypot(b.x - e.x, b.y - e.y);
+            if (distToBullet < e.radius + 5) {
+                e.hp -= player.damage;
+                createDamageNumber(e.x, e.y, player.damage);
+                bullets.splice(j, 1); // 弾消滅
+                
+                if (e.hp <= 0) {
+                    createExpGem(e.x, e.y, 5);
+                    score++;
+                    enemies.splice(i, 1);
+                    break; // 敵死亡ループ抜ける
+                }
+            }
+        }
+    }
+
+    // 経験値ジェムの更新
+    for (let i = expGems.length - 1; i >= 0; i--) {
+        const g = expGems[i];
+        const dist = Math.hypot(player.x - g.x, player.y - g.y);
+        
+        // 磁石効果 (近づくと吸い付く)
+        if (dist < 100) {
+            g.x += (player.x - g.x) * 0.1;
+            g.y += (player.y - g.y) * 0.1;
+        }
+
+        if (dist < player.radius + g.radius) {
+            gainExp(g.value);
+            expGems.splice(i, 1);
+        }
+    }
+
+    // ダメージ表示更新
+    for (let i = damageNumbers.length - 1; i >= 0; i--) {
+        damageNumbers[i].y -= 1;
+        damageNumbers[i].life--;
+        if (damageNumbers[i].life <= 0) damageNumbers.splice(i, 1);
+    }
+
+    // UI 更新
+    document.getElementById('hp').innerText = Math.floor(player.hp);
+    document.getElementById('lv').innerText = player.level;
+    document.getElementById('exp').innerText = player.exp;
+    document.getElementById('nextExp').innerText = player.nextLevelExp;
+    document.getElementById('kills').innerText = score;
+}
+
+function getNearestEnemy() {
+    let nearest = null;
+    let minDist = Infinity;
+    for (const e of enemies) {
+        const dist = Math.hypot(player.x - e.x, player.y - e.y);
+        if (dist < minDist) {
+            minDist = dist;
+            nearest = e;
+        }
+    }
+    return nearest;
+}
+
+function shoot(target) {
+    const angle = Math.atan2(target.y - player.y, target.x - player.x);
+    
+    // 多重ショット対応
+    const startAngle = angle - (0.2 * (player.multiShot - 1)) / 2;
+    
+    for (let i = 0; i < player.multiShot; i++) {
+        const currentAngle = startAngle + 0.2 * i;
+        bullets.push({
+            x: player.x,
+            y: player.y,
+            vx: Math.cos(currentAngle) * player.bulletSpeed,
+            vy: Math.sin(currentAngle) * player.bulletSpeed,
+            life: 100,
+            color: '#ffff00'
+        });
+    }
+}
+
+function gainExp(amount) {
+    player.exp += amount;
+    if (player.exp >= player.nextLevelExp) {
+        player.exp -= player.nextLevelExp;
+        player.level++;
+        player.nextLevelExp = Math.floor(player.nextLevelExp * 1.5);
+        levelUp();
+    }
+}
+
+function levelUp() {
+    gameState = 'paused';
+    document.getElementById('levelup').style.display = 'block';
+}
+
+function chooseUpgrade(type) {
+    if (type === 'damage') player.damage += 5;
+    if (type === 'speed') player.speed += 0.5;
+    if (type === 'firerate') player.fireRate = Math.max(5, player.fireRate - 3);
+    if (type === 'multishot') player.multiShot += 1;
+
+    // HP 回復
+    player.hp = player.maxHp;
+
+    document.getElementById('levelup').style.display = 'none';
+    gameState = 'playing';
+}
+
+function gameOver() {
+    gameState = 'gameover';
+    document.getElementById('gameover').style.display = 'block';
+    document.getElementById('finalTime').innerText = document.getElementById('time').innerText;
+    document.getElementById('finalKills').innerText = score;
+}
+
+// --- 描画処理 ---
+
+function draw() {
+    // 背景クリア
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 格子線（移動感を出すため）
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    const gridSize = 50;
+    const offsetX = -player.x % gridSize;
+    const offsetY = -player.y % gridSize;
+    // ※今回はカメラ固定なのでシンプルに描画
+    for (let x = 0; x < canvas.width; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+    }
+    for (let y = 0; y < canvas.height; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+    }
+
+    // 経験値ジェム
+    for (const g of expGems) {
+        ctx.fillStyle = g.color;
+        ctx.beginPath();
+        ctx.arc(g.x, g.y, g.radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // 敵
+    for (const e of enemies) {
+        ctx.fillStyle = e.color;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+        ctx.fill();
+        // 目を描く
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(e.x - 4, e.y - 4, 2, 0, Math.PI * 2);
+        ctx.arc(e.x + 4, e.y - 4, 2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // 弾
+    for (const b of bullets) {
+        ctx.fillStyle = b.color;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // プレイヤー
+    ctx.fillStyle = player.color;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+    ctx.fill();
+    // プレイヤーの目
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(player.x - 5, player.y - 5, 4, 0, Math.PI * 2);
+    ctx.arc(player.x + 5, player.y - 5, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ダメージ数値
+    ctx.fillStyle = 'white';
+    ctx.font = '12px Arial';
+    for (const d of damageNumbers) {
+        ctx.globalAlpha = d.life / 30;
+        ctx.fillText(d.text, d.x, d.y);
+        ctx.globalAlpha = 1.0;
+    }
+}
+
+// ゲームループ
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+
+</script>
+</body>
+</html>
